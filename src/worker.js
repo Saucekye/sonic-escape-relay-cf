@@ -1,15 +1,23 @@
 // Sonic Escape relay on Cloudflare Workers: room codes for online multiplayer.
-// The same protocol as ../relay.js (the Render / Node version):
-//   client -> server  {t:"host"}             create a room; reply {t:"room", code, id:1}
-//   client -> server  {t:"join", code}       join a room;   reply {t:"joined", code, id, ids:[...]}
-//                                            or {t:"error", msg}
-//   anything else from a client is passed on to the other players in the room
-//   with "from" set to the sender's id (add "to": id to send to one player only)
-//   server -> clients {t:"peer_join", id} / {t:"peer_left", id} / {t:"host_left"}
-// One Durable Object ("main") holds every room; it only lives while players are connected.
-
-const MAX_PLAYERS = 4;
+const MAX_PLAYERS = 8;
 const CODE_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ"; // no I or O, easy to read out
+
+function roomName(msg) {
+  return String(msg.name || "").replace(/[\x00-\x1f]/g, "").trim().slice(0, 24) || "Room";
+}
+
+function roomMax(msg) {
+  const n = parseInt(msg.max, 10);
+  return Number.isFinite(n) ? Math.min(Math.max(n, 2), MAX_PLAYERS) : MAX_PLAYERS;
+}
+
+function listRooms(rooms) {
+  const out = [];
+  for (const [code, room] of rooms) {
+    if (room.public && !room.started) out.push({ code, name: room.name, players: room.players.size, max: room.max });
+  }
+  return out;
+}
 
 export default {
   async fetch(request, env) {
@@ -65,20 +73,23 @@ export class Relay {
       if (!me.room) {
         if (msg.t === "host") {
           const code = this.newCode();
-          this.rooms.set(code, { players: new Map([[1, ws]]), started: false });
+          const room = { players: new Map([[1, ws]]), name: roomName(msg), max: roomMax(msg), public: msg.public !== false, started: false };
+          this.rooms.set(code, room);
           me.room = code; me.id = 1;
-          this.send(ws, { t: "room", code, id: 1 });
+          this.send(ws, { t: "room", code, id: 1, name: room.name, max: room.max });
+        } else if (msg.t === "list") {
+          this.send(ws, { t: "rooms", rooms: listRooms(this.rooms) });
         } else if (msg.t === "join") {
           const code = String(msg.code || "").toUpperCase().trim();
           const room = this.rooms.get(code);
           if (!room) return this.send(ws, { t: "error", msg: "No room with that code" });
-          if (room.players.size >= MAX_PLAYERS) return this.send(ws, { t: "error", msg: "Room is full" });
+          if (room.players.size >= room.max) return this.send(ws, { t: "error", msg: "Room is full" });
           if (room.started) return this.send(ws, { t: "error", msg: "That game has already started" });
           let id = 2;
           while (room.players.has(id)) id++;
           room.players.set(id, ws);
           me.room = code; me.id = id;
-          this.send(ws, { t: "joined", code, id, ids: [...room.players.keys()] });
+          this.send(ws, { t: "joined", code, id, ids: [...room.players.keys()], name: room.name, max: room.max });
           this.broadcast(room, { t: "peer_join", id }, id);
         }
         return;

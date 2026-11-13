@@ -1,4 +1,5 @@
 // Sonic Escape relay on Cloudflare Workers: room codes for online multiplayer.
+
 const MAX_PLAYERS = 8;
 const CODE_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ"; // no I or O, easy to read out
 
@@ -98,6 +99,7 @@ export class Relay {
       const room = this.rooms.get(me.room);
       if (!room) return;
       if (msg.t === "start" && me.id === 1) room.started = true;
+      if (msg.t === "lobby" && me.id === 1) room.started = false; // back in the room after a run
       msg.from = me.id;
       if (msg.to) {
         const target = room.players.get(msg.to);
